@@ -142,6 +142,11 @@ module fem_heat_mod
   real(wp) :: time_c = 0.0_wp                 ! Compensation for time update
   real(wp), allocatable :: kahan_u(:)         ! Per-node compensation for u-updates
   
+  ! New: Persistent compensation arrays for matrix operations
+  real(wp), allocatable :: compA(:,:)         ! Compensation for matrix A operations
+  real(wp), allocatable :: compB(:)           ! Compensation for vector b operations
+  real(wp), allocatable :: dot_comp(:)        ! Compensation for dot products
+  
   ! Current time tracking
   real(wp) :: current_time = 0.0_wp           ! Current simulation time
   
@@ -161,6 +166,12 @@ contains
     allocate(kahan_u(n_nodes))
     kahan_u = 0.0_wp
     time_c = 0.0_wp
+    
+    ! New: Allocate and initialize persistent compensation arrays
+    allocate(compA(n_nodes,n_nodes), compB(n_nodes), dot_comp(n_nodes))
+    compA = 0.0_wp
+    compB = 0.0_wp
+    dot_comp = 0.0_wp
     
     ! Generate mesh
     do i = 1, n_nodes
@@ -207,17 +218,36 @@ contains
     end do
     
     ! Assemble Crank-Nicolson matrix: A = M + 0.5*dt*alpha*K
-    A = M + 0.5_wp * dt * alpha * K
+    ! Use Kahan summation with persistent compensation
+    A = M
+    do i = 1, n_nodes
+      do j = 1, n_nodes
+        call kahan_add_scalar(A(i,j), 0.5_wp * dt * alpha * K(i,j), compA(i,j))
+      end do
+    end do
+    
 #ifdef ROOFLINE
-    call add_flops(2*n_nodes*n_nodes + n_nodes*n_nodes)  ! Matrix scaling and addition
-    call add_bytes(3*n_nodes*n_nodes*wp)  ! Read M and K, write A
+    call add_flops(3*n_nodes*n_nodes)  ! Matrix scaling and Kahan addition
+    call add_bytes(4*n_nodes*n_nodes*wp)  ! Read M and K, write A, use compA
 #endif
     
     ! Compute the right-hand side matrix: M - 0.5*dt*alpha*K
-    b = matmul(M - 0.5_wp * dt * alpha * K, u)
+    ! First set b to 0 and then use Kahan to compute the matrix-vector product
+    b = 0.0_wp
+    compB = 0.0_wp
+    
+    ! Create temporary matrix M - 0.5*dt*alpha*K with Kahan
+    ! Then multiply by u with Kahan
+    do i = 1, n_nodes
+      do j = 1, n_nodes
+        ! Add contribution from each element using Kahan
+        call kahan_add_scalar(b(i), (M(i,j) - 0.5_wp * dt * alpha * K(i,j)) * u(j), compB(i))
+      end do
+    end do
+    
 #ifdef ROOFLINE
-    call add_flops(2*n_nodes*n_nodes + n_nodes*n_nodes*n_nodes)  ! Matrix subtraction and matrix-vector multiplication
-    call add_bytes((2*n_nodes*n_nodes + n_nodes + n_nodes)*wp)  ! Read matrices and vector, write b
+    call add_flops(2*n_nodes*n_nodes + 3*n_nodes*n_nodes)  ! Matrix subtraction and Kahan matrix-vector multiplication
+    call add_bytes((3*n_nodes*n_nodes + 2*n_nodes)*wp)  ! Read matrices and vector, write b, use compB
 #endif
   end subroutine initialize
   
@@ -227,9 +257,16 @@ contains
     integer :: i, j, kk, info  ! Added proper declarations
     real(wp), allocatable :: A_copy(:,:), b_copy(:)
     integer, allocatable :: ipiv(:)
-    real(wp) :: comp, dot_result, dot_comp
+    real(wp), allocatable :: comp_matrix(:,:)  ! Persistent compensation for A_copy updates
+    real(wp), allocatable :: comp_vector(:)    ! Persistent compensation for b_copy updates
+    real(wp) :: dot_result
     
     allocate(A_copy(n_nodes,n_nodes), b_copy(n_nodes), ipiv(n_nodes))
+    allocate(comp_matrix(n_nodes,n_nodes), comp_vector(n_nodes))
+    
+    ! Initialize compensation arrays for this solve
+    comp_matrix = 0.0_wp
+    comp_vector = 0.0_wp
     
     ! Copy matrices for LAPACK solver
     A_copy = A
@@ -246,11 +283,10 @@ contains
       call add_bytes((n_nodes-i+1)*wp)  ! Read and write operation results
 #endif
       
-      ! Use Kahan summation for the matrix update
+      ! Use Kahan summation for the matrix update with persistent compensation
       do j = i+1, n_nodes
         do kk = i+1, n_nodes  ! Changed k to kk
-          comp = 0.0_wp
-          call kahan_add_scalar(A_copy(j,kk), -A_copy(j,i) * A_copy(i,kk), comp)
+          call kahan_add_scalar(A_copy(j,kk), -A_copy(j,i) * A_copy(i,kk), comp_matrix(j,kk))
         end do
       end do
 #ifdef ROOFLINE
@@ -258,10 +294,9 @@ contains
       call add_bytes(4*(n_nodes-i)*(n_nodes-i)*wp)  ! More memory accesses due to Kahan
 #endif
       
-      ! Use Kahan summation for the RHS update
+      ! Use Kahan summation for the RHS update with persistent compensation
       do j = i+1, n_nodes
-        comp = 0.0_wp
-        call kahan_add_scalar(b_copy(j), -A_copy(j,i) * b_copy(i), comp)
+        call kahan_add_scalar(b_copy(j), -A_copy(j,i) * b_copy(i), comp_vector(j))
       end do
 #ifdef ROOFLINE
       call add_flops(3*(n_nodes-i))  ! More operations for Kahan
@@ -276,13 +311,15 @@ contains
     call add_bytes(2*wp + wp)  ! Read two values, write result
 #endif
     
+    ! Reset dot_comp for backward substitution
+    dot_comp = 0.0_wp
+    
     do i = n_nodes-1, 1, -1
       dot_result = 0.0_wp
-      dot_comp = 0.0_wp
       
-      ! Compute dot product with Kahan summation
+      ! Compute dot product with Kahan summation using persistent compensation
       do j = i+1, n_nodes
-        call kahan_add_scalar(dot_result, A_copy(i,j) * u_new(j), dot_comp)
+        call kahan_add_scalar(dot_result, A_copy(i,j) * u_new(j), dot_comp(i))
       end do
       
       u_new(i) = (b_copy(i) - dot_result) / A_copy(i,i)
@@ -297,7 +334,7 @@ contains
     call quantize_to_half(u_new)
 #endif
     
-    deallocate(A_copy, b_copy, ipiv)
+    deallocate(A_copy, b_copy, ipiv, comp_matrix, comp_vector)
   end subroutine solve_system
   
   ! Apply Dirichlet boundary conditions
@@ -315,7 +352,7 @@ contains
   
   ! Time-stepping routine with Kahan summation
   subroutine time_stepping()
-    integer :: i, t
+    integer :: i, t, j
     
     ! Output initial condition
     call output_csv(0, 0.0_wp)
@@ -326,10 +363,20 @@ contains
       call kahan_add_scalar(current_time, dt, time_c)
       
       ! Compute the right-hand side
-      b = matmul(M - 0.5_wp * dt * alpha * K, u)
+      ! Reset b and its compensation for this time step
+      b = 0.0_wp
+      compB = 0.0_wp
+      
+      ! Compute b = (M - 0.5*dt*alpha*K)*u with Kahan summation
+      do i = 1, n_nodes
+        do j = 1, n_nodes
+          call kahan_add_scalar(b(i), (M(i,j) - 0.5_wp * dt * alpha * K(i,j)) * u(j), compB(i))
+        end do
+      end do
+      
 #ifdef ROOFLINE
-      call add_flops(2*n_nodes*n_nodes + n_nodes*n_nodes*n_nodes)  ! Matrix subtraction and matrix-vector multiplication
-      call add_bytes((2*n_nodes*n_nodes + n_nodes + n_nodes)*wp)  ! Read matrices and vector, write b
+      call add_flops(2*n_nodes*n_nodes + 3*n_nodes*n_nodes)  ! Matrix subtraction and Kahan matrix-vector multiplication
+      call add_bytes((3*n_nodes*n_nodes + 2*n_nodes)*wp)  ! Read matrices and vector, write b, use compB
 #endif
       
       ! Apply boundary conditions
@@ -338,9 +385,9 @@ contains
       ! Solve the system
       call solve_system()
       
-      ! Update solution with Kahan summation
+      ! Update solution
       do i = 1, n_nodes
-        u(i) = u_new(i)  ! Direct assignment for simplicity, could use kahan_axpy for more complex updates
+        u(i) = u_new(i)  ! Direct assignment for simplicity
       end do
 #ifdef ROOFLINE
       call add_bytes(n_nodes*wp)  ! Copy u_new to u

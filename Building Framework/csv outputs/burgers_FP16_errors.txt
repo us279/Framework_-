@@ -1,3 +1,0 @@
-L1 Error: NaN
-L2 Error: NaN
-Linf Error: 0.00000000

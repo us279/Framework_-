@@ -412,9 +412,12 @@ def create_error_comparison(equation_type):
             index = np.arange(len(df_errors['precision']))
             
             # Plot error bars
-            ax.bar(index, df_errors['L1 Error'], bar_width, label='ΔL1 Error', color='blue')
-            ax.bar(index + bar_width, df_errors['L2 Error'], bar_width, label='ΔL2 Error', color='green')
-            ax.bar(index + 2*bar_width, df_errors['Linf Error'], bar_width, label='ΔLinf Error', color='red')
+            ax.bar(index,             df_errors['L1 Error'],   bar_width, label='ΔL1 Error', color = 'blue')
+            ax.bar(index+bar_width,   df_errors['L2 Error'],   bar_width, label='ΔL2 Error', color = 'green' )
+            ax.bar(index+2*bar_width, df_errors['Linf Error'], bar_width, label='ΔLinf Error', color = 'red')
+
+
+            ax.set_yscale('log')
             
             ax.set_xlabel('Precision')
             ax.set_ylabel('Δ Error from FP128')

@@ -223,6 +223,11 @@ module supg_burgers_mod
   real(wp) :: time_c = 0.0_wp            ! Scalar time compensation
   real(wp), allocatable :: kahan_u(:)     ! Per-node compensation for u-updates
   
+  ! New: Persistent compensation arrays for matrix operations
+  real(wp), allocatable :: compA(:,:)     ! Compensation for A matrix 
+  real(wp), allocatable :: compB(:)       ! Compensation for b vector
+  real(wp), allocatable :: compTemp(:,:)  ! Compensation for temporary matrix
+  
   ! Time stepping parameters
   real(wp), parameter :: cfl_adv = 0.5_wp  ! CFL for advection
   real(wp), parameter :: cfl_diff = 0.5_wp ! CFL for diffusion
@@ -246,6 +251,12 @@ contains
     allocate(kahan_u(n_nodes))
     kahan_u = 0.0_wp
     time_c = 0.0_wp
+    
+    ! Allocate persistent compensation arrays for matrix operations
+    allocate(compA(n_nodes,n_nodes), compB(n_nodes), compTemp(n_nodes,n_nodes))
+    compA = 0.0_wp
+    compB = 0.0_wp
+    compTemp = 0.0_wp
     
     ! Generate mesh
     do i = 1, n_nodes
@@ -355,9 +366,11 @@ contains
     integer :: i, j, k
     real(wp), allocatable :: A_copy(:,:), b_copy(:)
     integer, allocatable :: ipiv(:)
-    real(wp) :: dot_result, dot_comp, elem_comp
+    real(wp) :: dot_result
+    real(wp), allocatable :: dot_comp_array(:)
     
     allocate(A_copy(n_nodes,n_nodes), b_copy(n_nodes), ipiv(n_nodes))
+    allocate(dot_comp_array(n_nodes))
     
     ! Copy matrices for solver
     A_copy = A
@@ -366,6 +379,10 @@ contains
     call add_flops(0)  ! Array assignment is not a floating-point operation
     call add_bytes(n_nodes*n_nodes*wp + n_nodes*wp)  ! Copy A and b
 #endif
+    
+    ! Reset compensation arrays for this solve
+    compA = 0.0_wp
+    compB = 0.0_wp
     
     ! Simple Gaussian elimination (could use LAPACK for more robust solution)
     do i = 1, n_nodes-1
@@ -378,8 +395,8 @@ contains
       ! Matrix update with Kahan summation for each element
       do j = i+1, n_nodes
         do k = i+1, n_nodes
-          elem_comp = 0.0_wp
-          call kahan_add_scalar(A_copy(j,k), -A_copy(j,i) * A_copy(i,k), elem_comp)
+          ! Use persistent compensation array instead of temporary
+          call kahan_add_scalar(A_copy(j,k), -A_copy(j,i) * A_copy(i,k), compA(j,k))
         end do
       end do
       
@@ -390,8 +407,8 @@ contains
       
       ! Update RHS with Kahan summation
       do j = i+1, n_nodes
-        elem_comp = 0.0_wp
-        call kahan_add_scalar(b_copy(j), -A_copy(j,i) * b_copy(i), elem_comp)
+        ! Use persistent compensation array
+        call kahan_add_scalar(b_copy(j), -A_copy(j,i) * b_copy(i), compB(j))
       end do
       
 #ifdef ROOFLINE
@@ -407,13 +424,15 @@ contains
     call add_bytes(3*wp)  ! Read two values, write result
 #endif
     
+    ! Initialize dot product compensation array
+    dot_comp_array = 0.0_wp
+    
     do i = n_nodes-1, 1, -1
       dot_result = 0.0_wp
-      dot_comp = 0.0_wp
       
-      ! Compute dot product with Kahan
+      ! Compute dot product with Kahan summation using persistent compensation
       do j = i+1, n_nodes
-        call kahan_add_scalar(dot_result, A_copy(i,j) * u(j), dot_comp)
+        call kahan_add_scalar(dot_result, A_copy(i,j) * u(j), dot_comp_array(i))
       end do
       
       u(i) = (b_copy(i) - dot_result) / A_copy(i,i)
@@ -428,7 +447,7 @@ contains
     call quantize_to_half(u)
 #endif
     
-    deallocate(A_copy, b_copy, ipiv)
+    deallocate(A_copy, b_copy, ipiv, dot_comp_array)
   end subroutine solve_system
   
   ! Apply boundary conditions
@@ -452,8 +471,7 @@ contains
     integer, intent(in) :: unit_mom  ! File unit for momentum output
     integer :: t, i, j
     real(wp) :: mom_now  ! Current momentum
-    real(wp), allocatable :: temp_matrix(:,:), temp_comp(:)
-    real(wp) :: comp
+    real(wp), allocatable :: temp_matrix(:,:)
     
     ! Output initial condition
     call output_csv(0, 0.0_wp)
@@ -462,7 +480,10 @@ contains
     current_time = 0.0_wp
     
     ! Allocate temporary storage for matrix operations
-    allocate(temp_matrix(n_nodes, n_nodes), temp_comp(n_nodes))
+    allocate(temp_matrix(n_nodes, n_nodes))
+    
+    ! Initialize compensation arrays for matrix operations in time loop
+    compTemp = 0.0_wp
     
     ! Time stepping loop with IMEX (Implicit-Explicit)
     do t = 1, n_time_steps
@@ -489,9 +510,9 @@ contains
       ! Calculate with Kahan summation
       do i = 1, n_nodes
         do j = 1, n_nodes
-          comp = 0.0_wp
+          ! Use persistent compensation array
           A(i,j) = M(i,j)
-          call kahan_add_scalar(A(i,j), dt * nu * K(i,j), comp)
+          call kahan_add_scalar(A(i,j), dt * nu * K(i,j), compA(i,j))
         end do
       end do
       
@@ -504,20 +525,17 @@ contains
       ! First calculate M - dt * C with Kahan
       do i = 1, n_nodes
         do j = 1, n_nodes
-          comp = 0.0_wp
           temp_matrix(i,j) = M(i,j)
-          call kahan_add_scalar(temp_matrix(i,j), -dt * C(i,j), comp)
+          call kahan_add_scalar(temp_matrix(i,j), -dt * C(i,j), compTemp(i,j))
         end do
       end do
       
       ! Now calculate matrix-vector product with Kahan
       b = 0.0_wp
-      temp_comp = 0.0_wp
       
       do i = 1, n_nodes
-        temp_comp(i) = 0.0_wp  ! Reset compensation for each row
         do j = 1, n_nodes
-          call kahan_add_scalar(b(i), temp_matrix(i,j) * u_old(j), temp_comp(i))
+          call kahan_add_scalar(b(i), temp_matrix(i,j) * u_old(j), compB(i))
         end do
       end do
       
@@ -546,7 +564,7 @@ contains
     end do
     
     ! Clean up
-    deallocate(temp_matrix, temp_comp)
+    deallocate(temp_matrix)
     
     ! Calculate and output errors
     call calculate_errors()
