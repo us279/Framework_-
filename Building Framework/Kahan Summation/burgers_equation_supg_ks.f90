@@ -46,49 +46,51 @@ contains
     real(wp), intent(in) :: x
     real(wp) :: res
     
-    real(wp) :: term, sum, fact_k, fact_nk
+    ! Do all intermediate work in DOUBLE PRECISION
+    real(8) :: sum8, term8, fact_k8, fact_nk8, x8
     integer :: k, maxk, i
     
     maxk = 50  ! Upper limit for series expansion
+    x8 = real(x, 8)  ! Convert input to double precision
     
     ! Special case for I_0(x)
     if (n == 0) then
-      sum = 1.0_wp
-      term = 1.0_wp
+      sum8 = 1.0_8
+      term8 = 1.0_8
       
       do k = 1, maxk
-        term = term * (x*x/4.0_wp) / (k*k)
-        sum = sum + term
-        if (abs(term) < 1.0e-15 * abs(sum)) exit
+        term8 = term8 * (x8*x8/4.0_8) / (real(k,8)*real(k,8))
+        sum8 = sum8 + term8
+        if (abs(term8) < 1.0e-15_8 * abs(sum8)) exit
       end do
       
-      res = sum
+      res = real(sum8, wp)  ! Convert back to working precision
       return
     end if
     
     ! General case for I_n(x), n > 0
-    sum = 0.0_wp
+    sum8 = 0.0_8
     
     do k = 0, maxk
       ! Calculate (x/2)^(n+2k) / (k! * (n+k)!)
-      fact_k = 1.0_wp
-      fact_nk = 1.0_wp
+      fact_k8 = 1.0_8
+      fact_nk8 = 1.0_8
       
       do i = 1, k
-        fact_k = fact_k * i
+        fact_k8 = fact_k8 * real(i, 8)
       end do
       
       do i = 1, n+k
-        fact_nk = fact_nk * i
+        fact_nk8 = fact_nk8 * real(i, 8)
       end do
       
-      term = (x/2.0_wp)**(n+2*k) / (fact_k * fact_nk)
-      sum = sum + term
+      term8 = (x8/2.0_8)**(n+2*k) / (fact_k8 * fact_nk8)
+      sum8 = sum8 + term8
       
-      if (k > 0 .and. abs(term) < 1.0e-15 * abs(sum)) exit
+      if (k > 0 .and. abs(term8) < 1.0e-15_8 * abs(sum8)) exit
     end do
     
-    res = sum
+    res = real(sum8, wp)  ! Convert back to working precision
   end function besseli
   
   ! Exact solution for the Burgers equation using Fourier-Bessel series
@@ -209,7 +211,7 @@ module supg_burgers_mod
   real(wp), parameter :: pi = 3.14159265358979323846_wp
   
   ! Discretization parameters
-  integer, parameter :: n_elements = 100   ! Number of elements
+  integer, parameter :: n_elements = 128   ! Number of elements
   integer, parameter :: n_nodes = n_elements+1 ! Number of nodes
   real(wp), parameter :: dx = (x_max - x_min) / n_elements
   
@@ -229,8 +231,8 @@ module supg_burgers_mod
   real(wp), allocatable :: compTemp(:,:)  ! Compensation for temporary matrix
   
   ! Time stepping parameters
-  real(wp), parameter :: cfl_adv = 0.5_wp  ! CFL for advection
-  real(wp), parameter :: cfl_diff = 0.5_wp ! CFL for diffusion
+  real(wp), parameter :: cfl_adv = 0.25_wp  ! CFL for advection
+  real(wp), parameter :: cfl_diff = 0.25_wp ! CFL for diffusion
   real(wp) :: dt, u_max                   ! Time step and max velocity
   integer :: n_time_steps
   real(wp) :: current_time = 0.0_wp       ! Current simulation time

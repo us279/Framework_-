@@ -323,12 +323,11 @@ def create_animation(eq_type, precision):
         return line, time_text
     
     # Save the animation to output directory
-    output_file = os.path.join(OUTPUT_DIR, f"{eq_type}_{precision}_animation.gif")
-    ani = FuncAnimation(fig, update, frames=len(files),
-                        init_func=init, blit=True, interval=200)
-    ani.save(output_file, writer='pillow', fps=5)
-    plt.close()
-    print(f"Saved animation to {output_file}")
+    #output_file = os.path.join(OUTPUT_DIR, f"{eq_type}_{precision}_animation.gif")
+    #ani = FuncAnimation(fig, update, frames=len(files),init_func=init, blit=True, interval=200)
+    #ani.save(output_file, writer='pillow', fps=5)
+    #plt.close()
+    #print(f"Saved animation to {output_file}")
 
 def create_error_comparison(equation_type):
     """Compare errors across precision levels for advection equation."""
@@ -412,12 +411,9 @@ def create_error_comparison(equation_type):
             index = np.arange(len(df_errors['precision']))
             
             # Plot error bars
-            ax.bar(index,             df_errors['L1 Error'],   bar_width, label='ΔL1 Error', color = 'blue')
-            ax.bar(index+bar_width,   df_errors['L2 Error'],   bar_width, label='ΔL2 Error', color = 'green' )
-            ax.bar(index+2*bar_width, df_errors['Linf Error'], bar_width, label='ΔLinf Error', color = 'red')
-
-
-            ax.set_yscale('log')
+            ax.bar(index, df_errors['L1 Error'], bar_width, label='ΔL1 Error', color='blue')
+            ax.bar(index + bar_width, df_errors['L2 Error'], bar_width, label='ΔL2 Error', color='green')
+            ax.bar(index + 2*bar_width, df_errors['Linf Error'], bar_width, label='ΔLinf Error', color='red')
             
             ax.set_xlabel('Precision')
             ax.set_ylabel('Δ Error from FP128')

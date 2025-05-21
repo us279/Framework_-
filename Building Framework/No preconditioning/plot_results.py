@@ -323,12 +323,12 @@ def create_animation(eq_type, precision):
         return line, time_text
     
     # Save the animation to output directory
-    output_file = os.path.join(OUTPUT_DIR, f"{eq_type}_{precision}_animation.gif")
-    ani = FuncAnimation(fig, update, frames=len(files),
-                        init_func=init, blit=True, interval=200)
-    ani.save(output_file, writer='pillow', fps=5)
-    plt.close()
-    print(f"Saved animation to {output_file}")
+    # output_file = os.path.join(OUTPUT_DIR, f"{eq_type}_{precision}_animation.gif")
+    # ani = FuncAnimation(fig, update, frames=len(files),
+    #                     init_func=init, blit=True, interval=200)
+    # ani.save(output_file, writer='pillow', fps=5)
+    # plt.close()
+    # print(f"Saved animation to {output_file}")
 
 def create_error_comparison(equation_type):
     """Compare errors across precision levels for advection equation."""
